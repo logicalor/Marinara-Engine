@@ -171,7 +171,16 @@ export async function registerCapabilityPrivilegedRoutes(
         if (!slot.active) return reply.status(404).send({ error: "Capability routes are not active" });
         if (slot.internalRouteState.active && request.headers[INTERNAL_ROUTE_HEADER] === slot.internalRouteState.token)
           return;
-        if (!requirePrivilegedAccess(request, reply, { feature: `${installed.manifest.name} package routes` }))
+        // This fork trusts tailnet/LAN peers for package routes (trustedNetwork):
+        // loopback AND Tailscale-interface requests both pass the gate, so browser
+        // widgets served over the tailnet hostname (e.g. the record's campaign
+        // card) can reach their package APIs. Upstream defaults to loopback-only.
+        if (
+          !requirePrivilegedAccess(request, reply, {
+            feature: `${installed.manifest.name} package routes`,
+            trustedNetwork: true,
+          })
+        )
           return reply;
       };
       app.route({
