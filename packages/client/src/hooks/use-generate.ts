@@ -662,6 +662,27 @@ function createGenerationSubmissionId(): string {
   }
   return `submission-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
+
+// ── Generation progress window events ─────────────────────────────────────
+// Broadcasts the turn's live progress to the page so extension code (e.g. the
+// marinara-agent-status package's custom element) can observe it without
+// reaching into this module's stores. Two events:
+//   marinara:generation-phase — { chatId, runId, stage } where stage is
+//     "agents-start" (the agent pipeline began), "narrator" (the first main-reply
+//     token arrived), "narrator-done" (the main reply completed), or
+//     "turn-done" (the whole agent pipeline settled).
+//   marinara:agent-progress — { chatId, runId, progress } where progress is the
+//     AgentTaskProgress payload for one agent call (agents, stage, chunks, timing).
+// Both are additive: the host's own behavior is unchanged.
+function dispatchGenerationPhase(detail: { chatId: string; runId: string; stage: string }) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("marinara:generation-phase", { detail }));
+}
+
+function dispatchAgentProgress(detail: { chatId: string; runId: string; progress: unknown }) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("marinara:agent-progress", { detail }));
+}
 import { useChatStore } from "../stores/chat.store";
 import { useAgentStore } from "../stores/agent.store";
 import { agentResultMatchesVisibleSwipe } from "../lib/agent-result-ownership";
@@ -1252,7 +1273,13 @@ export function useGenerate() {
   const clearResponseQueue = useChatStore((s) => s.clearResponseQueue);
   const setTypingCharacterName = useChatStore((s) => s.setTypingCharacterName);
   const setDelayedCharacterInfo = useChatStore((s) => s.setDelayedCharacterInfo);
-  const setProcessingRun = useAgentStore((s) => s.setProcessingRun);
+  const setProcessingRunStore = useAgentStore((s) => s.setProcessingRun);
+  // Wrapped to also broadcast the turn's agent-pipeline boundaries as a window
+  // event (see dispatchGenerationPhase above) — the store behavior is unchanged.
+  const setProcessingRun = (runId: string, processing: boolean, chatId: string) => {
+    setProcessingRunStore(runId, processing, chatId);
+    dispatchGenerationPhase({ chatId, runId, stage: processing ? "agents-start" : "turn-done" });
+  };
   const addResult = useAgentStore((s) => s.addResult);
   const addDebugEntry = useAgentStore((s) => s.addDebugEntry);
   const addThoughtBubble = useAgentStore((s) => s.addThoughtBubble);
@@ -2045,6 +2072,7 @@ export function useGenerate() {
                     detail: { chatId: params.chatId, phase: "thinking" },
                   }),
                 );
+                dispatchGenerationPhase({ chatId: params.chatId, runId: agentProcessingRunId, stage: "narrator" });
               }
 
               let chunk = event.data as string;
@@ -2071,6 +2099,11 @@ export function useGenerate() {
               useAgentStore
                 .getState()
                 .updateTaskProgress(params.chatId, agentProcessingRunId, event.data as AgentTaskProgress);
+              dispatchAgentProgress({
+                chatId: params.chatId,
+                runId: agentProcessingRunId,
+                progress: event.data,
+              });
               break;
             }
 
@@ -3175,6 +3208,7 @@ export function useGenerate() {
 
             case "done": {
               sawDoneEvent = true;
+              dispatchGenerationPhase({ chatId: params.chatId, runId: agentProcessingRunId, stage: "narrator-done" });
               if (
                 illustrationQueued &&
                 !illustrationSettled &&
@@ -4018,6 +4052,11 @@ export function useGenerate() {
               useAgentStore
                 .getState()
                 .updateTaskProgress(chatId, agentProcessingRunId, event.data as AgentTaskProgress);
+              dispatchAgentProgress({
+                chatId,
+                runId: agentProcessingRunId,
+                progress: event.data,
+              });
               break;
             }
             case "agents_retry_failed": {
